@@ -1,0 +1,54 @@
+# Environment variables (sensitive)
+.env
+.env.local
+.env.*.local
+
+# Cookies (sensitive)
+cookies.txt
+
+# Logs
+*.log
+server.log
+
+# Playwright MCP state
+.playwright-mcp/
+backend/yt_browser_state.json
+yt_browser_state.json
+
+# IDEs and editors
+.vscode/
+.idea/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node
+node_modules/
+.next/
+out/
+.turbo/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker volumes
+postgres_data/
+
+# Exclude TODO.txt (user requested to ignore it)
+TODO.txt
+
+# Ignore other folders starting with . but allow .github for CI/CD
+.*/
+!.github/
