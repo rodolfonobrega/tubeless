@@ -153,7 +153,7 @@ class Settings(BaseSettings):
     # YouTube Processing
     video_quality: str = "best"
     subtitle_languages: list[str] = Field(
-        default=["en", "en-US", "en-GB"],
+        default=["en", "en-US", "en-GB", "pt", "pt-BR"],
         description="Preferred subtitle languages",
     )
 

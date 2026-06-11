@@ -3,6 +3,7 @@
 import asyncio
 import concurrent.futures
 import hashlib
+import json
 import logging
 import os
 import random
@@ -78,6 +79,7 @@ class TranscriptService:
 
         metadata: dict = {}
         last_error: Exception | None = None
+        strategy_errors: list[str] = []
 
         for name, strategy, max_attempts in strategies:
             for attempt in range(max_attempts):
@@ -88,8 +90,15 @@ class TranscriptService:
                     if segments:
                         metadata.update(meta or {})
                         return raw_text, segments, lang, chapters, metadata
+                    last_error = TranscriptUnavailableError(
+                        f"{name} returned no transcript segments"
+                    )
+                    strategy_errors.append(f"{name}: returned no transcript segments")
+                    break
                 except TranscriptUnavailableError as e:
                     # No transcript available for this video — do not retry this strategy
+                    last_error = e
+                    strategy_errors.append(f"{name}: {e}")
                     logger.info(
                         "transcript_unavailable",
                         strategy=name,
@@ -101,6 +110,7 @@ class TranscriptService:
                     last_error = e
                     is_last_attempt = attempt == max_attempts - 1
                     if is_last_attempt:
+                        strategy_errors.append(f"{name}: {e}")
                         logger.warning(
                             "transcript_fetch_failed",
                             strategy=name,
@@ -125,6 +135,7 @@ class TranscriptService:
         # Exhausted all strategies
         raise TranscriptUnavailableError(
             f"Could not fetch transcript for {video_id}. "
+            f"Tried: {' | '.join(strategy_errors) if strategy_errors else 'no strategy succeeded'}. "
             f"Last error: {last_error or 'unknown'}"
         )
 
@@ -141,9 +152,9 @@ class TranscriptService:
         loop = asyncio.get_event_loop()
         try:
             # This is a blocking call, but fast (~200ms)
-            transcript_list = await loop.run_in_executor(
+            fetched_transcript = await loop.run_in_executor(
                 None,
-                lambda: YouTubeTranscriptApi.get_transcript(
+                lambda: YouTubeTranscriptApi().fetch(
                     video_id, languages=languages
                 ),
             )
@@ -153,6 +164,9 @@ class TranscriptService:
                 raise TranscriptUnavailableError(str(e))
             raise
 
+        transcript_list = fetched_transcript.to_raw_data()
+        detected_lang = fetched_transcript.language_code
+
         segments = []
         for item in transcript_list:
             start = item.get("start", 0)
@@ -161,7 +175,6 @@ class TranscriptService:
             segments.append(TranscriptSegment(text, start, start + duration))
 
         raw_text = " ".join(s.text for s in segments)
-        detected_lang = transcript_list[0].get("language", languages[0]) if transcript_list else None
         return raw_text, segments, detected_lang, [], {}
 
     # ------------------------------------------------------------------
@@ -175,19 +188,13 @@ class TranscriptService:
         import subprocess
 
         url = f"https://www.youtube.com/watch?v={video_id}"
-        lang_str = ",".join(languages)
 
         cmd = [
             "yt-dlp",
             "--skip-download",
-            "--write-subs",
-            "--sub-langs", lang_str,
-            "--sub-format", "json3",
-            "--convert-subs", "json3",
+            "--dump-json",
             "--quiet",
             "--no-warnings",
-            "--print", "%(title)s|%(duration)s|%(view_count)s|%(thumbnail)s",
-            "-o", "-",
             url,
         ]
 
@@ -208,41 +215,17 @@ class TranscriptService:
                 raise TranscriptUnavailableError(proc.stderr)
             raise Exception(f"yt-dlp error: {proc.stderr[:500]}")
 
-        # Parse metadata from first line
-        meta_line = proc.stdout.strip().splitlines()[0] if proc.stdout.strip() else ""
-        parts = meta_line.split("|")
-        metadata = {
-            "title": parts[0] if len(parts) > 0 else None,
-            "duration": int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else None,
-            "view_count": int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else None,
-            "thumbnail_url": parts[3] if len(parts) > 3 else None,
-        }
-
-        # Try to extract subtitles from yt-dlp auxiliary output (if --write-subs wrote to stdout)
-        # This path is not always reliable. yt-dlp usually writes to files:
-        # Simpler approach: use yt-dlp --dump-json and parse automatic_captions
-        # Re-run with dump-json for captions info
-        cmd_json = [
-            "yt-dlp",
-            "--skip-download",
-            "--dump-json",
-            "--quiet",
-            "--no-warnings",
-            url,
-        ]
-
-        proc_json = await loop.run_in_executor(
-            None,
-            lambda: subprocess.run(cmd_json, capture_output=True, text=True, timeout=30),
-        )
-        if proc_json.returncode != 0:
-            raise Exception(f"yt-dlp json error: {proc_json.stderr[:500]}")
-
-        import json
         try:
-            info = json.loads(proc_json.stdout.splitlines()[0])
+            info = json.loads(proc.stdout.splitlines()[0])
         except (json.JSONDecodeError, IndexError):
             raise Exception("yt-dlp produced invalid JSON")
+
+        metadata = {
+            "title": info.get("title"),
+            "duration": info.get("duration"),
+            "view_count": info.get("view_count"),
+            "thumbnail_url": info.get("thumbnail"),
+        }
 
         # Prefer manual captions, fallback to automatic
         captions = info.get("subtitles", {}) or info.get("automatic_captions", {})
@@ -264,26 +247,10 @@ class TranscriptService:
                 data = await loop.run_in_executor(
                     None, lambda: urllib.request.urlopen(url, timeout=15).read()
                 )
-                caption_json = json.loads(data)
-                events = caption_json.get("events", [])
-
-                segments = []
-                for ev in events:
-                    start_ms = ev.get("tStartMs", 0)
-                    dur_ms = ev.get("dDurationMs", 0)
-                    segs = ev.get("segs", [])
-                    text = "".join(s.get("utf8", "") for s in segs if "utf8" in s)
-                    if text.strip():
-                        segments.append(
-                            TranscriptSegment(
-                                text.strip(),
-                                start_ms / 1000.0,
-                                (start_ms + dur_ms) / 1000.0,
-                            )
-                        )
-
+                segments = self._parse_caption_payload(data)
                 raw_text = " ".join(s.text for s in segments)
-                return raw_text, segments, lang, [], metadata
+                if segments:
+                    return raw_text, segments, lang, [], metadata
 
         raise TranscriptUnavailableError("No captions found via yt-dlp")
 
@@ -356,12 +323,17 @@ class TranscriptService:
                         ],
                     )
 
-                ctx_kwargs: dict = {"locale": "pt-BR"}
+                ctx_kwargs: dict = {
+                    "locale": "pt-BR",
+                    "viewport": {"width": 1920, "height": 1080},
+                    "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+                }
                 if os.path.exists(storage_state_path):
                     ctx_kwargs["storage_state"] = storage_state_path
 
                 context = browser.new_context(**ctx_kwargs)
                 page = context.new_page()
+                page.add_init_script("delete navigator.__proto__.webdriver;")
                 page.route("**/*", _route_handler)
 
                 if attempt > 0:
@@ -415,7 +387,10 @@ class TranscriptService:
                 attempt=attempt + 1,
             )
 
-        raw_text = " ".join(s.text for s in segments) if segments else ""
+        if not segments:
+            raise TranscriptUnavailableError("Playwright transcript panel had no segments")
+
+        raw_text = " ".join(s.text for s in segments)
         return raw_text, segments, lang, [], metadata
 
     def _open_transcript_panel(
@@ -453,7 +428,7 @@ class TranscriptService:
 
         if not transcript_clicked:
             logger.warning("transcript_button_not_found")
-            return [], None
+            raise TranscriptUnavailableError("Transcript button not found")
 
         logger.info("transcript_button_clicked")
 
@@ -464,7 +439,7 @@ class TranscriptService:
             )
         except Exception:
             logger.warning("transcript_segments_not_found")
-            return [], None
+            raise TranscriptUnavailableError("Transcript segments not found")
 
         segments_data = page.evaluate(
             """
@@ -487,7 +462,7 @@ class TranscriptService:
 
         if not segments_data:
             logger.warning("no_segments_in_panel")
-            return [], None
+            raise TranscriptUnavailableError("Transcript panel returned no segments")
 
         logger.info(
             "segments_found", count=len(segments_data), video_id="playwright"
@@ -512,6 +487,80 @@ class TranscriptService:
         )
 
         return segments, lang
+
+    def _parse_caption_payload(self, payload: bytes) -> list[TranscriptSegment]:
+        """Parse a subtitle payload returned by yt-dlp."""
+        text = payload.decode("utf-8", errors="ignore")
+
+        try:
+            caption_json = json.loads(text)
+        except json.JSONDecodeError:
+            return self._parse_vtt_payload(text)
+
+        events = caption_json.get("events", [])
+        segments: list[TranscriptSegment] = []
+        for ev in events:
+            start_ms = ev.get("tStartMs", 0)
+            dur_ms = ev.get("dDurationMs", 0)
+            segs = ev.get("segs", [])
+            line = "".join(s.get("utf8", "") for s in segs if "utf8" in s).strip()
+            if line:
+                segments.append(
+                    TranscriptSegment(
+                        line,
+                        start_ms / 1000.0,
+                        (start_ms + dur_ms) / 1000.0,
+                    )
+                )
+        return segments
+
+    def _parse_vtt_payload(self, payload: str) -> list[TranscriptSegment]:
+        """Parse a minimal WebVTT subtitle payload."""
+        segments: list[TranscriptSegment] = []
+        current_lines: list[str] = []
+        start_time = 0.0
+        end_time = 0.0
+
+        for raw_line in payload.splitlines():
+            line = raw_line.strip()
+            if not line or line == "WEBVTT":
+                continue
+
+            if "-->" in line:
+                if current_lines:
+                    segments.append(
+                        TranscriptSegment(" ".join(current_lines).strip(), start_time, end_time)
+                    )
+                    current_lines = []
+
+                start_raw, end_raw = [part.strip() for part in line.split("-->", 1)]
+                start_time = self._parse_vtt_timestamp(start_raw)
+                end_time = self._parse_vtt_timestamp(end_raw.split()[0])
+                continue
+
+            if re.match(r"^\d+$", line):
+                continue
+
+            current_lines.append(line)
+
+        if current_lines:
+            segments.append(
+                TranscriptSegment(" ".join(current_lines).strip(), start_time, end_time)
+            )
+
+        return [segment for segment in segments if segment.text]
+
+    def _parse_vtt_timestamp(self, ts: str) -> float:
+        """Convert VTT timestamps to seconds."""
+        parts = ts.replace(",", ".").split(":")
+        try:
+            if len(parts) == 3:
+                return int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
+            if len(parts) == 2:
+                return int(parts[0]) * 60 + float(parts[1])
+        except ValueError:
+            return 0.0
+        return 0.0
 
     def _parse_timestamp(self, ts: str) -> float:
         parts = ts.strip().split(":")

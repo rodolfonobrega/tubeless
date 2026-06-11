@@ -53,6 +53,12 @@ async def main() -> None:
             CREATE INDEX IF NOT EXISTS ix_embeddings_content_hash ON embeddings (content_hash)
         """))
 
+        # Migration patch: add feedback to chat_messages if missing
+        await conn.execute(text("""
+            ALTER TABLE chat_messages 
+            ADD COLUMN IF NOT EXISTS feedback VARCHAR(10) NULL
+        """))
+
         # FTS index from migration 002 (idempotent)
         await conn.execute(text("""
             CREATE INDEX IF NOT EXISTS idx_transcript_chunks_fts

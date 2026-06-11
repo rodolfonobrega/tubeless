@@ -56,6 +56,20 @@ export function getYouTubeId(url: string): string | null {
   return match ? match[1] : null
 }
 
+export function getVideoDisplayTitle(
+  title: string | null | undefined,
+  videoId?: string | null,
+  fallback = 'Vídeo sem nome'
+): string {
+  const normalizedTitle = title?.trim()
+  const normalizedVideoId = videoId?.trim()
+
+  if (!normalizedTitle) return fallback
+  if (normalizedVideoId && normalizedTitle === normalizedVideoId) return fallback
+
+  return normalizedTitle
+}
+
 export function truncate(text: string, maxLength: number): string {
   if (text.length <= maxLength) return text
   return text.slice(0, maxLength) + '...'

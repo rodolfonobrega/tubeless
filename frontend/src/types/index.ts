@@ -102,6 +102,7 @@ export interface Project {
   error_message?: string | null
   created_at: string
   updated_at: string
+  video_thumbnails?: string[]
 }
 
 export interface VideoState {
@@ -109,6 +110,9 @@ export interface VideoState {
   youtube_video_id: string
   title: string
   status: string
+  stage?: string
+  progress?: number
+  queue_position?: number | null
 }
 
 export interface ProcessingStatus {
@@ -118,6 +122,11 @@ export interface ProcessingStatus {
   total_steps: number
   current_video: string | null
   errors: string[]
+  queued_count: number
+  processing_count: number
+  completed_count: number
+  failed_count: number
+  overall_progress: number
   video_states: VideoState[]
 }
 

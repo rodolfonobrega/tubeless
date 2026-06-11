@@ -54,7 +54,7 @@ class VectorService:
             .limit(1)
         )
         row = result.scalar_one_or_none()
-        return list(row) if row else None
+        return list(row) if row is not None else None
 
     async def store_embedding(
         self,

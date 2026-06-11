@@ -83,6 +83,7 @@ interface ProjectCardProps {
     updated_at: string
     video_count?: number
     processed_count?: number
+    video_thumbnails?: string[]
   }
   accentColor: string
 }
@@ -156,13 +157,39 @@ function ProjectCard({ project, accentColor }: ProjectCardProps) {
           <div className="flex items-center justify-between mb-4 mt-2">
             <div className="relative w-28 h-16 flex-shrink-0">
               {/* Back card */}
-              <div className="absolute top-0 right-1 w-[84px] h-[52px] rounded-lg bg-gray-100 border border-gray-200/80 shadow-sm opacity-60 transform translate-x-3 -translate-y-1.5 rotate-[6deg]" />
+              {project.video_thumbnails && project.video_thumbnails[2] ? (
+                <img
+                  src={project.video_thumbnails[2]}
+                  alt="Video thumbnail"
+                  className="absolute top-0 right-1 w-[84px] h-[52px] rounded-lg object-cover border border-gray-200/80 shadow-sm opacity-60 transform translate-x-3 -translate-y-1.5 rotate-[6deg]"
+                />
+              ) : (
+                <div className="absolute top-0 right-1 w-[84px] h-[52px] rounded-lg bg-gray-100 border border-gray-200/80 shadow-sm opacity-60 transform translate-x-3 -translate-y-1.5 rotate-[6deg]" />
+              )}
               {/* Middle card */}
-              <div className="absolute top-1 right-2 w-[84px] h-[52px] rounded-lg bg-gray-100 border border-gray-200/90 shadow-sm opacity-80 transform translate-x-1.5 -translate-y-1 rotate-[3deg]" />
+              {project.video_thumbnails && project.video_thumbnails[1] ? (
+                <img
+                  src={project.video_thumbnails[1]}
+                  alt="Video thumbnail"
+                  className="absolute top-1 right-2 w-[84px] h-[52px] rounded-lg object-cover border border-gray-200/90 shadow-sm opacity-80 transform translate-x-1.5 -translate-y-1 rotate-[3deg]"
+                />
+              ) : (
+                <div className="absolute top-1 right-2 w-[84px] h-[52px] rounded-lg bg-gray-100 border border-gray-200/90 shadow-sm opacity-80 transform translate-x-1.5 -translate-y-1 rotate-[3deg]" />
+              )}
               {/* Front card */}
-              <div className="absolute bottom-0 left-0 w-24 h-[56px] rounded-lg bg-gray-50 border border-gray-200 shadow flex items-center justify-center text-gray-400 group-hover:text-red-500 transition-colors">
-                <Video className="h-5 w-5 transition-transform group-hover:scale-110 duration-200" />
-              </div>
+              {project.video_thumbnails && project.video_thumbnails[0] ? (
+                <div className="absolute bottom-0 left-0 w-24 h-[56px] rounded-lg overflow-hidden border border-gray-200 shadow">
+                  <img
+                    src={project.video_thumbnails[0]}
+                    alt="Video thumbnail"
+                    className="w-full h-full object-cover transition-transform group-hover:scale-105 duration-200"
+                  />
+                </div>
+              ) : (
+                <div className="absolute bottom-0 left-0 w-24 h-[56px] rounded-lg bg-gray-50 border border-gray-200 shadow flex items-center justify-center text-gray-400 group-hover:text-red-500 transition-colors">
+                  <Video className="h-5 w-5 transition-transform group-hover:scale-110 duration-200" />
+                </div>
+              )}
             </div>
             <div className="text-sm text-gray-500 font-medium flex items-center gap-1.5 pr-2">
               <span className="bg-gray-100 px-2.5 py-1 rounded-full text-xs text-gray-700 flex items-center gap-1 border border-gray-200">

@@ -1,14 +1,28 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState, type FormEvent } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { ExternalLink, Trash2, Plus, Youtube, RefreshCw, Search, Loader2, ChevronLeft, ChevronRight, Check, Square, Copy, CopyCheck } from 'lucide-react'
+import {
+  ExternalLink,
+  Trash2,
+  Plus,
+  Youtube,
+  RefreshCw,
+  Search,
+  Loader2,
+  ChevronLeft,
+  ChevronRight,
+  Check,
+  Square,
+  Copy,
+  CopyCheck,
+} from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Card, CardContent } from '@/components/ui/card'
+import { getVideoDisplayTitle } from '@/lib/utils'
 import api, { projectsApi, searchApi, YouTubeSearchResult } from '@/lib/api'
 import type { Video } from '@/types'
-
 
 interface VideoManagerProps {
   projectId: string
@@ -17,17 +31,15 @@ interface VideoManagerProps {
 
 function formatDuration(seconds: number | null): string {
   if (!seconds) return ''
-  const m = Math.floor(seconds / 60)
-  const s = seconds % 60
-  return m >= 60
-    ? `${Math.floor(m / 60)}h ${m % 60}m`
-    : `${m}:${String(s).padStart(2, '0')}`
+  const minutes = Math.floor(seconds / 60)
+  const secs = seconds % 60
+  return minutes >= 60
+    ? `${Math.floor(minutes / 60)}h ${minutes % 60}m`
+    : `${minutes}:${String(secs).padStart(2, '0')}`
 }
 
-
-
-
 export function VideoManager({ projectId, videos }: VideoManagerProps) {
+  const [showAddPanel, setShowAddPanel] = useState(videos.length === 0)
   const [mode, setMode] = useState<'url' | 'search'>('url')
   const [youtubeId, setYoutubeId] = useState('')
   const [searchMode, setSearchMode] = useState<'smart' | 'direct'>('smart')
@@ -40,6 +52,12 @@ export function VideoManager({ projectId, videos }: VideoManagerProps) {
   const [addProgress, setAddProgress] = useState<{ done: number; total: number; errors: string[] } | null>(null)
   const PAGE_SIZE = 12
   const queryClient = useQueryClient()
+
+  useEffect(() => {
+    if (videos.length === 0) {
+      setShowAddPanel(true)
+    }
+  }, [videos.length])
 
   const addVideo = useMutation({
     mutationFn: async (id: string) => {
@@ -72,6 +90,14 @@ export function VideoManager({ projectId, videos }: VideoManagerProps) {
     },
   })
 
+  const retryFailed = useMutation({
+    mutationFn: async () => projectsApi.retryAll(projectId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['project', projectId] })
+      queryClient.invalidateQueries({ queryKey: ['project-videos', projectId] })
+    },
+  })
+
   const addVideosBatch = useMutation({
     mutationFn: async (ids: string[]) => {
       const cleanId = (id: string) =>
@@ -89,10 +115,10 @@ export function VideoManager({ projectId, videos }: VideoManagerProps) {
             api.post(`/projects/${projectId}/videos`, { youtube_video_id: cleanId(id) })
           )
         )
-        results.forEach((r, j) => {
-          if (r.status === 'rejected') {
-            const errMsg = (r.reason as Error)?.message || 'Unknown error'
-            errors.push(`${chunk[j]}: ${errMsg}`)
+        results.forEach((result, index) => {
+          if (result.status === 'rejected') {
+            const errMsg = (result.reason as Error)?.message || 'Unknown error'
+            errors.push(`${chunk[index]}: ${errMsg}`)
           }
         })
         setAddProgress((prev) =>
@@ -130,18 +156,18 @@ export function VideoManager({ projectId, videos }: VideoManagerProps) {
   const selectAllResults = () => {
     setSelectedForAdd((prev) => {
       const next = new Set(prev)
-      const allSelected = searchResults.every((v) => next.has(v.id))
+      const allSelected = searchResults.every((video) => next.has(video.id))
       if (allSelected) {
-        searchResults.forEach((v) => next.delete(v.id))
+        searchResults.forEach((video) => next.delete(video.id))
       } else {
-        searchResults.forEach((v) => next.add(v.id))
+        searchResults.forEach((video) => next.add(video.id))
       }
       return next
     })
   }
 
-  const handleSearchVideos = async (e?: React.FormEvent) => {
-    if (e) e.preventDefault()
+  const handleSearchVideos = async (event?: FormEvent) => {
+    if (event) event.preventDefault()
     if (!searchQuery.trim()) return
     setIsSearching(true)
     setSearchError(null)
@@ -158,273 +184,340 @@ export function VideoManager({ projectId, videos }: VideoManagerProps) {
     }
   }
 
-  const handleAdd = (e: React.FormEvent) => {
-    e.preventDefault()
+  const handleAdd = (event: FormEvent) => {
+    event.preventDefault()
     if (youtubeId.trim()) addVideo.mutate(youtubeId)
   }
 
-  const existingIds = new Set(videos.map((v) => v.youtube_video_id))
-  const newVideosAll = allSearchResults.filter((v) => !existingIds.has(v.id))
+  const existingIds = new Set(videos.map((video) => video.youtube_video_id))
+  const newVideosAll = allSearchResults.filter((video) => !existingIds.has(video.id))
   const alreadyInTotal = allSearchResults.length - newVideosAll.length
   const totalPages = Math.max(1, Math.ceil(newVideosAll.length / PAGE_SIZE))
   const currentPage = Math.min(searchPage, totalPages - 1)
   const searchResults = newVideosAll.slice(currentPage * PAGE_SIZE, (currentPage + 1) * PAGE_SIZE)
 
+  const failedVideos = videos.filter((video) => video.status === 'failed')
+  const completedVideos = videos.filter((video) => video.status === 'completed')
+  const processingVideos = videos.filter((video) => video.status === 'processing')
+  const queuedVideos = videos.filter((video) => video.status === 'pending')
+
   return (
-    <div className="space-y-4 max-w-3xl mx-auto py-2">
-      {/* Mode toggle */}
-      <div className="flex gap-1 bg-muted rounded-lg p-1 w-fit">
-        <button
-          type="button"
-          onClick={() => setMode('url')}
-          className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
-            mode === 'url' ? 'bg-background shadow-sm' : 'text-muted-foreground hover:text-foreground'
-          }`}
-        >
-          URL / ID
-        </button>
-        <button
-          type="button"
-          onClick={() => setMode('search')}
-          className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
-            mode === 'search' ? 'bg-background shadow-sm' : 'text-muted-foreground hover:text-foreground'
-          }`}
-        >
-          Search by term
-        </button>
-      </div>
-
-      {/* Add video — URL mode */}
-      {mode === 'url' && (
-        <>
-          <form onSubmit={handleAdd} className="flex gap-2">
-            <Input
-              value={youtubeId}
-              onChange={(e) => setYoutubeId(e.target.value)}
-              placeholder="YouTube URL or video ID (e.g. dQw4w9WgXcQ)"
-              className="flex-1"
-            />
-            <Button type="submit" disabled={!youtubeId.trim() || addVideo.isPending}>
-              <Plus className="h-4 w-4 mr-1" />
-              Add
-            </Button>
-          </form>
-          {addVideo.isError && (
-            <p className="text-sm text-destructive">{(addVideo.error as Error).message}</p>
-          )}
-        </>
-      )}
-
-      {/* Add video — Search mode */}
-      {mode === 'search' && (
-        <>
-          {/* Sub-toggle: Smart / Direct */}
-          <div className="flex gap-1 bg-muted rounded-lg p-1 w-fit">
-            <button
-              type="button"
-              onClick={() => setSearchMode('smart')}
-              className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
-                searchMode === 'smart' ? 'bg-background shadow-sm' : 'text-muted-foreground hover:text-foreground'
-              }`}
-            >
-              Smart
-            </button>
-            <button
-              type="button"
-              onClick={() => setSearchMode('direct')}
-              className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
-                searchMode === 'direct' ? 'bg-background shadow-sm' : 'text-muted-foreground hover:text-foreground'
-              }`}
-            >
-              Direct
-            </button>
+    <div className="space-y-4 max-w-5xl mx-auto py-2">
+      <div className="rounded-2xl border border-gray-200 bg-white shadow-sm">
+        <div className="flex flex-col gap-4 border-b border-gray-100 px-5 py-5 lg:flex-row lg:items-start lg:justify-between">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="text-xl font-semibold text-gray-900">Videos</h2>
+              <span className="rounded-full bg-gray-100 px-2.5 py-1 text-xs font-medium text-gray-600">
+                {videos.length} total
+              </span>
+              {processingVideos.length > 0 && (
+                <span className="rounded-full bg-indigo-50 px-2.5 py-1 text-xs font-medium text-indigo-700">
+                  {processingVideos.length} active
+                </span>
+              )}
+              {queuedVideos.length > 0 && (
+                <span className="rounded-full bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-700">
+                  {queuedVideos.length} queued
+                </span>
+              )}
+              {failedVideos.length > 0 && (
+                <span className="rounded-full bg-red-50 px-2.5 py-1 text-xs font-medium text-red-700">
+                  {failedVideos.length} failed
+                </span>
+              )}
+            </div>
+            <p className="mt-1 text-sm text-gray-500">
+              Browse your library, add new videos in a separate panel, and retry failed items without changing tabs.
+            </p>
           </div>
 
-          <form onSubmit={handleSearchVideos} className="flex gap-2">
-            <Input
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search YouTube videos (e.g. english, python tutorial...)"
-              className="flex-1"
-            />
-            <Button type="submit" disabled={!searchQuery.trim() || isSearching}>
-              {isSearching ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Search className="h-4 w-4" />
-              )}
+          <div className="flex flex-wrap gap-2">
+            {failedVideos.length > 0 && (
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => retryFailed.mutate()}
+                disabled={retryFailed.isPending}
+              >
+                {retryFailed.isPending ? (
+                  <Loader2 className="h-4 w-4 animate-spin mr-1" />
+                ) : (
+                  <RefreshCw className="h-4 w-4 mr-1" />
+                )}
+                Retry failed ({failedVideos.length})
+              </Button>
+            )}
+            <Button type="button" onClick={() => setShowAddPanel((value) => !value)}>
+              <Plus className="h-4 w-4 mr-1" />
+              {showAddPanel ? 'Close add panel' : 'Add videos'}
             </Button>
-          </form>
-          {searchError && (
-            <p className="text-sm text-destructive">{searchError}</p>
-          )}
+          </div>
+        </div>
 
-          {/* Search results */}
-          {allSearchResults.length > 0 && newVideosAll.length === 0 && (
-            <p className="text-sm text-muted-foreground text-center py-4">
-              All {allSearchResults.length} results are already in the project.
-            </p>
-          )}
-          {searchResults.length > 0 && (
-            <>
-              {/* Batch actions */}
-              <div className="flex items-center gap-2 flex-wrap">
-                {alreadyInTotal > 0 && (
-                  <span className="text-xs text-muted-foreground">
-                    {alreadyInTotal} already in project
-                  </span>
-                )}
-                <button
-                  type="button"
-                  onClick={selectAllResults}
-                  className="text-xs text-muted-foreground hover:text-foreground transition-colors"
-                >
-                  {searchResults.every((v) => selectedForAdd.has(v.id)) && selectedForAdd.size > 0
-                    ? 'Deselect all'
-                    : 'Select all'}
-                </button>
-                {selectedForAdd.size > 0 && (
-                  <Button
-                    size="sm"
-                    onClick={() => addVideosBatch.mutate([...selectedForAdd])}
-                    disabled={addVideosBatch.isPending}
-                  >
-                    {addVideosBatch.isPending ? (
-                      <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" />
-                    ) : (
-                      <Plus className="h-3.5 w-3.5 mr-1" />
-                    )}
-                    {addVideosBatch.isPending && addProgress
-                      ? `Adding ${addProgress.done}/${addProgress.total}...`
-                      : `Add ${selectedForAdd.size} video${selectedForAdd.size !== 1 ? 's' : ''}`}
-                  </Button>
-                )}
-                {addProgress && addProgress.errors.length > 0 && addVideosBatch.isError && (
-                  <span className="text-xs text-destructive">
-                    {addProgress.errors.length} error{addProgress.errors.length !== 1 ? 's' : ''}
-                  </span>
-                )}
-              </div>
+        {showAddPanel && (
+          <div className="border-b border-gray-100 bg-gray-50/60 px-5 py-5">
+            <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
+              <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                <div>
+                  <div className="text-sm font-semibold text-gray-900">Add videos to this project</div>
+                  <p className="mt-1 text-sm text-gray-500">
+                    Use a direct URL or search YouTube and queue several videos at once.
+                  </p>
+                </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                {searchResults.map((video) => {
-                  const isSelected = selectedForAdd.has(video.id)
-                  return (
-                    <Card key={video.id} className="overflow-hidden group">
-                      <div
-                        className="relative aspect-video bg-muted cursor-pointer"
-                        onClick={() => toggleSelect(video.id)}
-                      >
-                        <img
-                          src={video.thumbnail_url}
-                          alt={video.title}
-                          className="w-full h-full object-cover"
-                        />
-                        <div className={`absolute inset-0 transition-colors ${
-                          isSelected
-                            ? 'bg-primary/30 border-2 border-primary'
-                            : 'bg-transparent group-hover:bg-black/10'
-                        }`}>
-                          <div className={`absolute top-2 right-2 w-6 h-6 rounded-full flex items-center justify-center transition-opacity ${
-                            isSelected
-                              ? 'bg-primary text-primary-foreground opacity-100'
-                              : 'bg-black/40 text-white opacity-0 group-hover:opacity-100'
-                          }`}>
-                            {isSelected ? (
-                              <Check className="h-4 w-4" />
-                            ) : (
-                              <Square className="h-4 w-4" />
-                            )}
-                          </div>
-                        </div>
-                        <div className="absolute bottom-1.5 right-1.5 bg-black/80 text-white text-xs px-1.5 py-0.5 rounded">
-                          {formatDuration(video.duration_seconds)}
-                        </div>
-                      </div>
-                      <CardContent className="p-2">
-                        <p className="text-sm font-medium line-clamp-2">{video.title}</p>
-                        <p className="text-xs text-muted-foreground mt-1">{video.channel}</p>
-                        <div className="mt-2">
-                          <Button
-                            size="sm"
-                            variant={isSelected ? 'default' : 'outline'}
-                            className="w-full"
-                            onClick={() => toggleSelect(video.id)}
-                          >
-                            {isSelected ? (
-                              <>
-                                <Check className="h-3 w-3 mr-1" />
-                                Selected
-                              </>
-                            ) : (
-                              <>
-                                <Plus className="h-3 w-3 mr-1" />
-                                Select
-                              </>
-                            )}
-                          </Button>
-                        </div>
-                      </CardContent>
-                    </Card>
-                  )
-                })}
-              </div>
-
-              {/* Pagination */}
-              {newVideosAll.length > PAGE_SIZE && (
-                <div className="flex items-center justify-center gap-3 pt-2">
+                <div className="flex gap-1 rounded-lg bg-muted p-1 w-fit">
                   <button
                     type="button"
-                    onClick={() => setSearchPage(p => p - 1)}
-                    disabled={currentPage === 0}
-                    className="inline-flex items-center gap-1 rounded-md text-sm font-medium h-8 px-3 border hover:bg-accent disabled:opacity-40 disabled:cursor-not-allowed"
+                    onClick={() => setMode('url')}
+                    className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                      mode === 'url' ? 'bg-background shadow-sm' : 'text-muted-foreground hover:text-foreground'
+                    }`}
                   >
-                    <ChevronLeft className="h-4 w-4" />
+                    URL / ID
                   </button>
-                  <span className="text-sm text-muted-foreground">
-                    {currentPage + 1} / {totalPages}
-                  </span>
                   <button
                     type="button"
-                    onClick={() => setSearchPage(p => p + 1)}
-                    disabled={currentPage + 1 >= totalPages}
-                    className="inline-flex items-center gap-1 rounded-md text-sm font-medium h-8 px-3 border hover:bg-accent disabled:opacity-40 disabled:cursor-not-allowed"
+                    onClick={() => setMode('search')}
+                    className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                      mode === 'search' ? 'bg-background shadow-sm' : 'text-muted-foreground hover:text-foreground'
+                    }`}
                   >
-                    <ChevronRight className="h-4 w-4" />
+                    Search by term
                   </button>
                 </div>
-              )}
-            </>
-          )}
-        </>
-      )}
+              </div>
 
-      {/* Video list header */}
+              {mode === 'url' && (
+                <form onSubmit={handleAdd} className="mt-4 flex gap-2">
+                  <Input
+                    value={youtubeId}
+                    onChange={(event) => setYoutubeId(event.target.value)}
+                    placeholder="YouTube URL or video ID (e.g. dQw4w9WgXcQ)"
+                    className="flex-1"
+                  />
+                  <Button type="submit" disabled={!youtubeId.trim() || addVideo.isPending}>
+                    <Plus className="h-4 w-4 mr-1" />
+                    Add
+                  </Button>
+                </form>
+              )}
+
+              {mode === 'search' && (
+                <div className="mt-4 space-y-4">
+                  <div className="flex gap-1 rounded-lg bg-muted p-1 w-fit">
+                    <button
+                      type="button"
+                      onClick={() => setSearchMode('smart')}
+                      className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                        searchMode === 'smart' ? 'bg-background shadow-sm' : 'text-muted-foreground hover:text-foreground'
+                      }`}
+                    >
+                      Smart
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSearchMode('direct')}
+                      className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                        searchMode === 'direct' ? 'bg-background shadow-sm' : 'text-muted-foreground hover:text-foreground'
+                      }`}
+                    >
+                      Direct
+                    </button>
+                  </div>
+
+                  <form onSubmit={handleSearchVideos} className="flex gap-2">
+                    <Input
+                      value={searchQuery}
+                      onChange={(event) => setSearchQuery(event.target.value)}
+                      placeholder="Search YouTube videos (e.g. english, python tutorial...)"
+                      className="flex-1"
+                    />
+                    <Button type="submit" disabled={!searchQuery.trim() || isSearching}>
+                      {isSearching ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Search className="h-4 w-4" />
+                      )}
+                    </Button>
+                  </form>
+
+                  {searchError && <p className="text-sm text-destructive">{searchError}</p>}
+
+                  {allSearchResults.length > 0 && newVideosAll.length === 0 && (
+                    <p className="text-sm text-muted-foreground text-center py-4">
+                      All {allSearchResults.length} results are already in the project.
+                    </p>
+                  )}
+
+                  {searchResults.length > 0 && (
+                    <>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        {alreadyInTotal > 0 && (
+                          <span className="text-xs text-muted-foreground">
+                            {alreadyInTotal} already in project
+                          </span>
+                        )}
+                        <button
+                          type="button"
+                          onClick={selectAllResults}
+                          className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+                        >
+                          {searchResults.every((video) => selectedForAdd.has(video.id)) && selectedForAdd.size > 0
+                            ? 'Deselect all'
+                            : 'Select all'}
+                        </button>
+                        {selectedForAdd.size > 0 && (
+                          <Button
+                            size="sm"
+                            onClick={() => addVideosBatch.mutate([...selectedForAdd])}
+                            disabled={addVideosBatch.isPending}
+                          >
+                            {addVideosBatch.isPending ? (
+                              <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" />
+                            ) : (
+                              <Plus className="h-3.5 w-3.5 mr-1" />
+                            )}
+                            {addVideosBatch.isPending && addProgress
+                              ? `Adding ${addProgress.done}/${addProgress.total}...`
+                              : `Add ${selectedForAdd.size} video${selectedForAdd.size !== 1 ? 's' : ''}`}
+                          </Button>
+                        )}
+                        {addProgress && addProgress.errors.length > 0 && addVideosBatch.isError && (
+                          <span className="text-xs text-destructive">
+                            {addProgress.errors.length} error{addProgress.errors.length !== 1 ? 's' : ''}
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                        {searchResults.map((video) => {
+                          const isSelected = selectedForAdd.has(video.id)
+                          return (
+                            <Card key={video.id} className="overflow-hidden group">
+                              <div
+                                className="relative aspect-video bg-muted cursor-pointer"
+                                onClick={() => toggleSelect(video.id)}
+                              >
+                                <img
+                                  src={video.thumbnail_url}
+                                  alt={video.title}
+                                  className="h-full w-full object-cover"
+                                />
+                                <div
+                                  className={`absolute inset-0 transition-colors ${
+                                    isSelected
+                                      ? 'bg-primary/30 border-2 border-primary'
+                                      : 'bg-transparent group-hover:bg-black/10'
+                                  }`}
+                                >
+                                  <div
+                                    className={`absolute top-2 right-2 flex h-6 w-6 items-center justify-center rounded-full transition-opacity ${
+                                      isSelected
+                                        ? 'bg-primary text-primary-foreground opacity-100'
+                                        : 'bg-black/40 text-white opacity-0 group-hover:opacity-100'
+                                    }`}
+                                  >
+                                    {isSelected ? (
+                                      <Check className="h-4 w-4" />
+                                    ) : (
+                                      <Square className="h-4 w-4" />
+                                    )}
+                                  </div>
+                                </div>
+                                <div className="absolute bottom-1.5 right-1.5 rounded bg-black/80 px-1.5 py-0.5 text-xs text-white">
+                                  {formatDuration(video.duration_seconds)}
+                                </div>
+                              </div>
+                              <CardContent className="p-2">
+                                <p className="text-sm font-medium line-clamp-2">{video.title}</p>
+                                <p className="mt-1 text-xs text-muted-foreground">{video.channel}</p>
+                                <div className="mt-2">
+                                  <Button
+                                    size="sm"
+                                    variant={isSelected ? 'default' : 'outline'}
+                                    className="w-full"
+                                    onClick={() => toggleSelect(video.id)}
+                                  >
+                                    {isSelected ? (
+                                      <>
+                                        <Check className="h-3 w-3 mr-1" />
+                                        Selected
+                                      </>
+                                    ) : (
+                                      <>
+                                        <Plus className="h-3 w-3 mr-1" />
+                                        Select
+                                      </>
+                                    )}
+                                  </Button>
+                                </div>
+                              </CardContent>
+                            </Card>
+                          )
+                        })}
+                      </div>
+
+                      {newVideosAll.length > PAGE_SIZE && (
+                        <div className="flex items-center justify-center gap-3 pt-2">
+                          <button
+                            type="button"
+                            onClick={() => setSearchPage((page) => page - 1)}
+                            disabled={currentPage === 0}
+                            className="inline-flex items-center gap-1 rounded-md border px-3 h-8 text-sm font-medium hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40"
+                          >
+                            <ChevronLeft className="h-4 w-4" />
+                          </button>
+                          <span className="text-sm text-muted-foreground">
+                            {currentPage + 1} / {totalPages}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => setSearchPage((page) => page + 1)}
+                            disabled={currentPage + 1 >= totalPages}
+                            className="inline-flex items-center gap-1 rounded-md border px-3 h-8 text-sm font-medium hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40"
+                          >
+                            <ChevronRight className="h-4 w-4" />
+                          </button>
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+
       {videos.length > 0 && (
         <div className="flex items-center justify-between">
-          <p className="text-sm text-gray-500">{videos.length} video{videos.length !== 1 ? 's' : ''}</p>
+          <p className="text-sm text-gray-500">
+            {completedVideos.length} completed, {failedVideos.length} failed
+          </p>
           <CopyAllLinksButton videos={videos} />
         </div>
       )}
 
-      {/* Video rows */}
       {videos.length === 0 ? (
-        <div className="text-center py-16 text-gray-400">
-          <Youtube className="h-12 w-12 mx-auto mb-3 opacity-20" />
+        <div className="rounded-2xl border border-dashed border-gray-200 bg-white py-16 text-center text-gray-400">
+          <Youtube className="mx-auto mb-3 h-12 w-12 opacity-20" />
           <p className="text-sm">No videos in project yet.</p>
         </div>
       ) : (
-        <div className="divide-y divide-gray-100 border border-gray-200 rounded-xl overflow-hidden">
-          {videos.map((video) => (
-            <VideoRow
-              key={video.id}
-              video={video}
-              onRetry={() => retryVideo.mutate(video.id)}
-              onRemove={() => removeVideo.mutate(video.id)}
-              isRetrying={retryVideo.isPending}
-              isRemoving={removeVideo.isPending}
-            />
-          ))}
+        <div className="overflow-hidden rounded-2xl border border-gray-200">
+          <div className="divide-y divide-gray-100">
+            {videos.map((video) => (
+              <VideoRow
+                key={video.id}
+                video={video}
+                onRetry={() => retryVideo.mutate(video.id)}
+                onRemove={() => removeVideo.mutate(video.id)}
+                isRetrying={retryVideo.isPending}
+                isRemoving={removeVideo.isPending}
+              />
+            ))}
+          </div>
         </div>
       )}
     </div>
@@ -441,101 +534,129 @@ interface VideoRowProps {
 
 function VideoRow({ video, onRetry, onRemove, isRetrying, isRemoving }: VideoRowProps) {
   const [menuOpen, setMenuOpen] = useState(false)
-  const title = video.title || video.youtube_video_id
+  const title = getVideoDisplayTitle(video.title, video.youtube_video_id)
   const ytUrl = `https://www.youtube.com/watch?v=${video.youtube_video_id}`
 
   const statusBadge = () => {
-    if (video.status === 'completed') return (
-      <span className="inline-flex items-center gap-1 text-xs font-medium text-green-700 bg-green-100 px-2.5 py-0.5 rounded-full">
-        <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
-        Ready
-      </span>
-    )
-    if (video.status === 'processing') return (
-      <span className="inline-flex items-center gap-1 text-xs font-medium text-orange-700 bg-orange-100 px-2.5 py-0.5 rounded-full">
-        <Loader2 className="h-3 w-3 animate-spin" />
-        Processing
-      </span>
-    )
-    if (video.status === 'failed') return (
-      <span className="inline-flex items-center gap-1 text-xs font-medium text-red-700 bg-red-100 px-2.5 py-0.5 rounded-full">
-        <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
-        Failed
-      </span>
-    )
+    if (video.status === 'completed') {
+      return (
+        <span className="inline-flex items-center gap-1 rounded-full bg-green-100 px-2.5 py-0.5 text-xs font-medium text-green-700">
+          <span className="h-1.5 w-1.5 rounded-full bg-green-500" />
+          Ready
+        </span>
+      )
+    }
+    if (video.status === 'processing') {
+      return (
+        <span className="inline-flex items-center gap-1 rounded-full bg-indigo-100 px-2.5 py-0.5 text-xs font-medium text-indigo-700">
+          <Loader2 className="h-3 w-3 animate-spin" />
+          Processing
+        </span>
+      )
+    }
+    if (video.status === 'failed') {
+      return (
+        <span className="inline-flex items-center gap-1 rounded-full bg-red-100 px-2.5 py-0.5 text-xs font-medium text-red-700">
+          <span className="h-1.5 w-1.5 rounded-full bg-red-500" />
+          Failed
+        </span>
+      )
+    }
     return (
-      <span className="inline-flex items-center gap-1 text-xs font-medium text-gray-600 bg-gray-100 px-2.5 py-0.5 rounded-full">
-        <span className="w-1.5 h-1.5 rounded-full bg-gray-400" />
-        Pending
+      <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2.5 py-0.5 text-xs font-medium text-amber-700">
+        <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+        Queued
       </span>
     )
   }
 
   return (
-    <div className="flex items-center gap-4 px-5 py-4 bg-white hover:bg-gray-50 transition-colors">
-      {/* Thumbnail */}
-      <div className="flex-shrink-0 relative w-28 h-16 rounded-lg overflow-hidden bg-gray-100">
+    <div className="flex items-center gap-4 bg-white px-5 py-4 transition-colors hover:bg-gray-50">
+      <div className="relative h-16 w-28 flex-shrink-0 overflow-hidden rounded-lg bg-gray-100">
         {video.thumbnail_url ? (
-          <img src={video.thumbnail_url} alt={title} className="w-full h-full object-cover" />
+          <img src={video.thumbnail_url} alt={title} className="h-full w-full object-cover" />
         ) : (
-          <div className="w-full h-full flex items-center justify-center">
+          <div className="flex h-full w-full items-center justify-center">
             <Youtube className="h-5 w-5 text-gray-300" />
           </div>
         )}
         {video.duration && (
-          <div className="absolute bottom-1 right-1 bg-black/80 text-white text-[10px] px-1.5 py-0.5 rounded font-mono">
+          <div className="absolute bottom-1 right-1 rounded bg-black/80 px-1.5 py-0.5 font-mono text-[10px] text-white">
             {formatDuration(video.duration)}
           </div>
         )}
       </div>
 
-      {/* Info */}
-      <div className="flex-1 min-w-0">
-        <a href={ytUrl} target="_blank" rel="noopener noreferrer"
-          className="font-medium text-sm text-gray-900 hover:underline line-clamp-1">
+      <div className="min-w-0 flex-1">
+        <a
+          href={ytUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="line-clamp-1 text-sm font-medium text-gray-900 hover:underline"
+        >
           {title}
         </a>
-        {video.channel_title && (
-          <p className="text-xs text-gray-500 mt-0.5">{video.channel_title}</p>
-        )}
+        {video.channel_title && <p className="mt-0.5 text-xs text-gray-500">{video.channel_title}</p>}
         {video.error_message && video.status === 'failed' && (
-          <p className="text-xs text-red-500 mt-0.5 truncate" title={video.error_message}>{video.error_message}</p>
+          <p className="mt-0.5 truncate text-xs text-red-500" title={video.error_message}>
+            {video.error_message}
+          </p>
         )}
       </div>
 
-      {/* Status badge */}
       <div className="flex-shrink-0">{statusBadge()}</div>
 
-      {/* 3-dot menu */}
       <div className="relative flex-shrink-0">
         <button
           type="button"
           onClick={() => setMenuOpen(!menuOpen)}
-          className="p-1.5 rounded-md text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition-colors"
+          className="rounded-md p-1.5 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-700"
         >
           <svg className="h-4 w-4" viewBox="0 0 16 16" fill="currentColor">
-            <circle cx="8" cy="3" r="1.5" /><circle cx="8" cy="8" r="1.5" /><circle cx="8" cy="13" r="1.5" />
+            <circle cx="8" cy="3" r="1.5" />
+            <circle cx="8" cy="8" r="1.5" />
+            <circle cx="8" cy="13" r="1.5" />
           </svg>
         </button>
         {menuOpen && (
           <>
             <div className="fixed inset-0 z-10" onClick={() => setMenuOpen(false)} />
-            <div className="absolute right-0 top-full mt-1 z-20 bg-white border border-gray-200 rounded-lg shadow-md py-1 min-w-[140px]">
-              <a href={ytUrl} target="_blank" rel="noopener noreferrer" onClick={() => setMenuOpen(false)}
-                className="flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50">
-                <ExternalLink className="h-3.5 w-3.5" /> Open on YouTube
+            <div className="absolute right-0 top-full z-20 mt-1 min-w-[160px] rounded-lg border border-gray-200 bg-white py-1 shadow-md">
+              <a
+                href={ytUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={() => setMenuOpen(false)}
+                className="flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+              >
+                <ExternalLink className="h-3.5 w-3.5" />
+                Open on YouTube
               </a>
               {(video.status === 'failed' || video.status === 'pending') && (
-                <button type="button" disabled={isRetrying}
-                  onClick={() => { setMenuOpen(false); onRetry() }}
-                  className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50">
-                  <RefreshCw className="h-3.5 w-3.5" /> Retry
+                <button
+                  type="button"
+                  disabled={isRetrying}
+                  onClick={() => {
+                    setMenuOpen(false)
+                    onRetry()
+                  }}
+                  className="flex w-full items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                >
+                  <RefreshCw className="h-3.5 w-3.5" />
+                  Retry
                 </button>
               )}
-              <button type="button" disabled={isRemoving}
-                onClick={() => { setMenuOpen(false); onRemove() }}
-                className="w-full flex items-center gap-2 px-3 py-2 text-sm text-red-600 hover:bg-red-50">
-                <Trash2 className="h-3.5 w-3.5" /> Remove
+              <button
+                type="button"
+                disabled={isRemoving}
+                onClick={() => {
+                  setMenuOpen(false)
+                  onRemove()
+                }}
+                className="flex w-full items-center gap-2 px-3 py-2 text-sm text-red-600 hover:bg-red-50"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                Remove
               </button>
             </div>
           </>
@@ -550,7 +671,7 @@ function CopyAllLinksButton({ videos }: { videos: Video[] }) {
 
   const handleCopy = async () => {
     const links = videos
-      .map((v) => `https://www.youtube.com/watch?v=${v.youtube_video_id}`)
+      .map((video) => `https://www.youtube.com/watch?v=${video.youtube_video_id}`)
       .join('\n')
     await navigator.clipboard.writeText(links)
     setCopied(true)

@@ -84,6 +84,24 @@ class TestCreateProject:
 
         assert mock_video_repo.create.call_count == 3
 
+    def test_create_sets_video_count_from_payload(self, client):
+        project = make_project(video_count=0)
+        mock_proj_repo = AsyncMock()
+        mock_proj_repo.create = AsyncMock(return_value=project)
+        mock_video_repo = AsyncMock()
+        mock_video_repo.create = AsyncMock()
+
+        with patch("app.api.v1.projects.ProjectRepository", return_value=mock_proj_repo), \
+             patch("app.api.v1.projects.VideoRepository", return_value=mock_video_repo):
+            response = client.post(PROJECTS_URL, json={
+                "name": "Project",
+                "query": "query",
+                "video_ids": ["v1", "v2"],
+            })
+
+        assert response.status_code == 201
+        assert mock_proj_repo.create.call_args.kwargs["video_count"] == 2
+
     def test_create_requires_name(self, client):
         response = client.post(PROJECTS_URL, json={
             "query": "query",
@@ -262,3 +280,118 @@ class TestDeleteProject:
             client.delete(f"{PROJECTS_URL}/{project_id}")
 
         mock_session.commit.assert_called()
+
+
+# ---------------------------------------------------------------------------
+# POST /projects/{project_id}/videos
+# ---------------------------------------------------------------------------
+
+
+class TestAddVideo:
+    def test_add_video_marks_project_processing_and_increments_count(self, client):
+        project = make_project(status="completed", video_count=2)
+        mock_proj_repo = AsyncMock()
+        mock_proj_repo.get = AsyncMock(return_value=project)
+
+        video = MagicMock()
+        video.id = uuid.uuid4()
+        video.project_id = project.id
+        video.youtube_video_id = "new123"
+        video.title = "New"
+        video.description = None
+        video.channel_title = None
+        video.thumbnail_url = None
+        video.duration = None
+        video.view_count = None
+        video.status = "pending"
+        video.error_message = None
+        video.downloaded_at = None
+        video.processed_at = None
+
+        mock_video_repo = AsyncMock()
+        mock_video_repo.get_by_youtube_id = AsyncMock(return_value=None)
+        mock_video_repo.create = AsyncMock(return_value=video)
+
+        with patch("app.api.v1.projects.ProjectRepository", return_value=mock_proj_repo), \
+             patch("app.api.v1.projects.VideoRepository", return_value=mock_video_repo):
+            response = client.post(f"{PROJECTS_URL}/{project.id}/videos", json={"youtube_video_id": "new123"})
+
+        assert response.status_code == 201
+        assert project.status == "processing"
+        assert project.video_count == 3
+
+
+# ---------------------------------------------------------------------------
+# POST /projects/{project_id}/retry
+# ---------------------------------------------------------------------------
+
+
+class TestRetryProject:
+    def test_retry_only_resets_failed_videos(self, client):
+        project = make_project(status="completed", video_count=3)
+        failed_video = MagicMock()
+        failed_video.status = "failed"
+        failed_video.error_message = "boom"
+        completed_video = MagicMock()
+        completed_video.status = "completed"
+        completed_video.error_message = None
+        pending_video = MagicMock()
+        pending_video.status = "pending"
+        pending_video.error_message = "waiting"
+
+        mock_proj_repo = AsyncMock()
+        mock_proj_repo.get = AsyncMock(return_value=project)
+        mock_video_repo = AsyncMock()
+        mock_video_repo.list_by_project = AsyncMock(return_value=[failed_video, completed_video, pending_video])
+
+        with patch("app.api.v1.projects.ProjectRepository", return_value=mock_proj_repo), \
+             patch("app.api.v1.projects.VideoRepository", return_value=mock_video_repo):
+            response = client.post(f"{PROJECTS_URL}/{project.id}/retry")
+
+        assert response.status_code == 200
+        assert project.status == "processing"
+        assert failed_video.status == "pending"
+        assert failed_video.error_message is None
+        assert completed_video.status == "completed"
+        assert pending_video.status == "pending"
+
+
+# ---------------------------------------------------------------------------
+# GET /projects/{project_id}/status
+# ---------------------------------------------------------------------------
+
+
+class TestProjectStatus:
+    def test_status_reports_counts(self, client):
+        project = make_project(status="processing", video_count=3)
+        project_id = str(project.id)
+
+        videos = []
+        for status in ["pending", "processing", "failed"]:
+            video = MagicMock()
+            video.id = uuid.uuid4()
+            video.youtube_video_id = f"vid-{status}"
+            video.title = f"Video {status}"
+            video.status = status
+            video.error_message = "boom" if status == "failed" else None
+            video.created_at = datetime(2026, 1, 1, 12, 0, 0)
+            video.updated_at = datetime(2026, 1, 1, 12, 0, 0)
+            videos.append(video)
+
+        mock_proj_repo = AsyncMock()
+        mock_proj_repo.get = AsyncMock(return_value=project)
+        mock_video_repo = AsyncMock()
+        mock_video_repo.list_by_project = AsyncMock(return_value=videos)
+
+        with patch("app.api.v1.projects.ProjectRepository", return_value=mock_proj_repo), \
+             patch("app.api.v1.projects.VideoRepository", return_value=mock_video_repo), \
+             patch("app.api.v1.projects._is_orchestrator_alive", return_value=True):
+            response = client.get(f"{PROJECTS_URL}/{project_id}/status")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["queued_count"] == 1
+        assert data["processing_count"] == 1
+        assert data["completed_count"] == 0
+        assert data["failed_count"] == 1
+        assert data["current_video"] == "Video processing"

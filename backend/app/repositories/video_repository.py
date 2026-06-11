@@ -102,7 +102,7 @@ class VideoRepository(BaseRepository[Video]):
         return await self.list_all(
             offset=offset,
             limit=limit,
-            order_by="published_at",
+            order_by="created_at",
             **filters,
         )
 

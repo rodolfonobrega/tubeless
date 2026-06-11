@@ -7,6 +7,7 @@ from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from pydantic import BaseModel, Field
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_session
@@ -43,6 +44,7 @@ class ProjectResponse(BaseModel):
     error_message: str | None = None
     created_at: str
     updated_at: str
+    video_thumbnails: list[str] = Field(default_factory=list)
 
 
 class ProjectListResponse(BaseModel):
@@ -255,7 +257,12 @@ class ProcessingStatusResponse(BaseModel):
     total_steps: int
     current_video: str | None
     errors: list[str]
-    video_states: list[dict] = []
+    queued_count: int = 0
+    processing_count: int = 0
+    completed_count: int = 0
+    failed_count: int = 0
+    overall_progress: float = 0.0
+    video_states: list[dict] = Field(default_factory=list)
 
 
 class ConsolidatedSynthesisResponse(BaseModel):
@@ -340,6 +347,8 @@ async def add_video_to_project(
         youtube_video_id=request.youtube_video_id,
         status="pending",
     )
+    project.status = "processing"
+    project.video_count += 1
     # Capture response BEFORE commit to avoid MissingGreenlet on expired attrs
     response = _video_to_response(video)
     await session.commit()
@@ -376,8 +385,7 @@ async def retry_video(
 
     video.status = "pending"
     video.error_message = None
-    if project.status in ("failed", "completed"):
-        project.status = "processing"
+    project.status = "processing"
 
     # Capture response BEFORE commit to avoid MissingGreenlet on expired attrs
     response = _video_to_response(video)
@@ -393,24 +401,22 @@ async def retry_project(
     background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(get_session),
 ) -> ProjectResponse:
-    """Reset all failed/pending videos and reprocess the project."""
+    """Reset failed videos and reprocess the project."""
     try:
         project_uuid = uuid.UUID(project_id)
     except ValueError:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid ID format")
-
-    from app.repositories.project_repository import ProjectRepository
 
     project_repo = ProjectRepository(session)
     project = await project_repo.get(project_uuid)
     if not project:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
 
-    # Reset all videos that aren't completed
+    # Reset only failed videos. Completed videos stay intact.
     video_repo = VideoRepository(session)
     all_videos = await video_repo.list_by_project(project_uuid)
     for v in all_videos:
-        if v.status != "completed":
+        if v.status == "failed":
             v.status = "pending"
             v.error_message = None
     project.status = "processing"
@@ -443,6 +449,10 @@ async def remove_video_from_project(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Video not found in project")
 
     await video_repo.delete(video_uuid)
+    project_repo = ProjectRepository(session)
+    project = await project_repo.get(project_uuid)
+    if project and project.video_count > 0:
+        project.video_count -= 1
     await session.commit()
 
 
@@ -473,12 +483,14 @@ async def get_project_status(
     videos = await video_repo.list_by_project(project_uuid)
 
     completed_count = sum(1 for v in videos if v.status == "completed")
+    processing_count = sum(1 for v in videos if v.status == "processing")
+    queued_count = sum(1 for v in videos if v.status == "pending")
     failed_count = sum(1 for v in videos if v.status == "failed")
 
     # Auto-correct project status based on actual video states.
     # Handles: stuck processing, orchestrator crash after videos done, etc.
     if not _is_orchestrator_alive(project_id):
-        if project.status == "processing" or project.status == "fetching":
+        if project.status in ("processing", "fetching", "embedding"):
             if completed_count > 0:
                 project.status = "completed"
             elif failed_count > 0:
@@ -492,19 +504,28 @@ async def get_project_status(
             await session.commit()
 
     total = len(videos)
-    completed = sum(1 for v in videos if v.status == "completed")
+    finished_count = completed_count + failed_count
     failed = [v for v in videos if v.status == "failed"]
-    processing = next((v for v in videos if v.status == "processing"), None)
+    active_videos = [v for v in videos if v.status == "processing"]
 
     stage_map = {
         "pending": "initializing",
         "processing": "downloading_transcripts",
         "fetching": "downloading_transcripts",
-        "embedding": "generating_summaries",
+        "embedding": "synthesizing",
         "completed": "complete",
         "failed": "failed",
     }
     stage = stage_map.get(project.status, "initializing")
+
+    ordered_videos = sorted(
+        videos,
+        key=lambda v: str(v.created_at or v.updated_at or v.id),
+    )
+    queue_positions = {
+        str(v.id): idx + 1
+        for idx, v in enumerate(v for v in ordered_videos if v.status == "pending")
+    }
 
     video_states = [
         {
@@ -512,17 +533,45 @@ async def get_project_status(
             "youtube_video_id": v.youtube_video_id,
             "title": v.title or v.youtube_video_id,
             "status": v.status,
+            "stage": (
+                "queued"
+                if v.status == "pending"
+                else "processing"
+                if v.status == "processing"
+                else "failed"
+                if v.status == "failed"
+                else "ready"
+            ),
+            "progress": 100 if v.status in ("completed", "failed") else 50 if v.status == "processing" else 0,
+            "queue_position": queue_positions.get(str(v.id)),
         }
         for v in videos
     ]
 
+    current_video = (
+        active_videos[0].title or active_videos[0].youtube_video_id
+        if active_videos
+        else None
+    )
+    if total == 0:
+        overall_progress = 100.0
+    elif project.status == "completed" or finished_count == total:
+        overall_progress = 100.0
+    else:
+        overall_progress = min(99.0, round((finished_count / total) * 100, 1))
+
     return ProcessingStatusResponse(
         project_id=project_id,
         stage=stage,
-        current_step=completed,
+        current_step=finished_count,
         total_steps=max(total, 1),
-        current_video=processing.title if processing else None,
+        current_video=current_video,
         errors=[f"{v.youtube_video_id}: {v.error_message}" for v in failed if v.error_message],
+        queued_count=queued_count,
+        processing_count=processing_count,
+        completed_count=completed_count,
+        failed_count=failed_count,
+        overall_progress=overall_progress,
         video_states=video_states,
     )
 
@@ -653,24 +702,31 @@ async def _run_orchestrator(project_id: uuid.UUID) -> None:
     active, this call is a no-op — the running orchestrator will pick up
     any newly-added pending videos.
     """
-    from app.core.db import async_session_maker as AsyncSessionLocal
+    from app.core.db import async_session_maker as AsyncSessionLocal, engine
     from app.core.websocket import manager
     from app.services.orchestrator_service import ProcessingOrchestrator
 
     pid = str(project_id)
-    if pid in _active_orchestrators:
-        logger.info(f"Orchestrator already running for project {pid}, skipping")
-        return
-    _active_orchestrators.add(pid)
-    try:
-        async with AsyncSessionLocal() as session:
-            try:
-                orchestrator = ProcessingOrchestrator(session, manager)
-                await orchestrator.process_project(project_id)
-            except Exception as e:
-                logger.error(f"Orchestrator failed for project {project_id}: {e}")
-    finally:
-        _active_orchestrators.discard(pid)
+    lock_sql = text("SELECT pg_try_advisory_lock(hashtextextended(:project_key, 0))")
+    unlock_sql = text("SELECT pg_advisory_unlock(hashtextextended(:project_key, 0))")
+
+    async with engine.connect() as conn:
+        acquired = (await conn.execute(lock_sql, {"project_key": pid})).scalar()
+        if not acquired:
+            logger.info(f"Orchestrator already running for project {pid}, skipping")
+            return
+
+        _active_orchestrators.add(pid)
+        try:
+            async with AsyncSessionLocal() as session:
+                try:
+                    orchestrator = ProcessingOrchestrator(session, manager)
+                    await orchestrator.process_project(project_id)
+                except Exception as e:
+                    logger.error(f"Orchestrator failed for project {project_id}: {e}")
+        finally:
+            _active_orchestrators.discard(pid)
+            await conn.execute(unlock_sql, {"project_key": pid})
 
 
 def _project_to_response(project: Project) -> ProjectResponse:
@@ -682,6 +738,12 @@ def _project_to_response(project: Project) -> ProjectResponse:
     Returns:
         ProjectResponse instance.
     """
+    video_thumbnails = []
+    if project.videos:
+        for v in project.videos:
+            url = v.thumbnail_url or f"https://img.youtube.com/vi/{v.youtube_video_id}/mqdefault.jpg"
+            video_thumbnails.append(url)
+
     return ProjectResponse(
         id=str(project.id),
         name=project.name,
@@ -693,4 +755,5 @@ def _project_to_response(project: Project) -> ProjectResponse:
         error_message=getattr(project, "error_message", None),
         created_at=project.created_at.isoformat(),
         updated_at=project.updated_at.isoformat(),
+        video_thumbnails=video_thumbnails,
     )

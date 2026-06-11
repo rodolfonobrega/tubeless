@@ -1,8 +1,9 @@
 'use client'
 
 import { motion } from 'framer-motion'
-import { Check, Loader2, AlertCircle, XCircle } from 'lucide-react'
-import { cn, formatTimestamp } from '@/lib/utils'
+import { AlertCircle, Check, Loader2, XCircle } from 'lucide-react'
+import { cn } from '@/lib/utils'
+import { Progress } from '@/components/ui/progress'
 import type { ProcessingStage, VideoState } from '@/types'
 
 interface ProcessingPipelineProps {
@@ -12,15 +13,19 @@ interface ProcessingPipelineProps {
   currentVideo: string | null
   errors: string[]
   videoStates?: VideoState[]
+  queuedCount?: number
+  processingCount?: number
+  completedCount?: number
+  failedCount?: number
+  overallProgress?: number
   className?: string
 }
 
 const stages: { key: ProcessingStage; label: string; description: string }[] = [
-  { key: 'initializing', label: 'Fetching Transcript', description: 'Retrieving the video transcript from YouTube...' },
-  { key: 'fetching_metadata', label: 'Chunking', description: 'Splitting transcript into manageable chunks...' },
-  { key: 'downloading_transcripts', label: 'Summarizing (Map)', description: 'Generating summaries for each chunk in parallel...' },
-  { key: 'generating_summaries', label: 'Summarizing (Reduce)', description: 'Combining chunk summaries into a coherent summary...' },
-  { key: 'synthesizing', label: 'Generating Embeddings', description: 'Creating vector embeddings for semantic search...' },
+  { key: 'initializing', label: 'Queued', description: 'Waiting for the pipeline to start.' },
+  { key: 'downloading_transcripts', label: 'Fetching transcripts', description: 'Downloading captions or reading them from the player.' },
+  { key: 'generating_summaries', label: 'Summarizing', description: 'Generating per-video summaries in the background.' },
+  { key: 'synthesizing', label: 'Embedding + synthesis', description: 'Building embeddings and the consolidated synthesis.' },
 ]
 
 export function ProcessingPipeline({
@@ -29,53 +34,159 @@ export function ProcessingPipeline({
   totalSteps,
   currentVideo,
   errors,
-  videoStates,
+  videoStates = [],
+  queuedCount = 0,
+  processingCount = 0,
+  completedCount = 0,
+  failedCount = 0,
+  overallProgress,
   className,
 }: ProcessingPipelineProps) {
-  const stageKeys = stages.map(s => s.key)
-  const currentStageIndex = stageKeys.indexOf(currentStage as typeof stageKeys[number])
-  const isFailed = currentStage === 'failed'
-  const isComplete = currentStage === 'complete'
+  const stageKeys = stages.map((stage) => stage.key)
+  const currentStageIndex = stageKeys.indexOf(currentStage)
+  const progressValue =
+    typeof overallProgress === 'number'
+      ? Math.max(0, Math.min(100, overallProgress))
+      : totalSteps > 0
+        ? Math.max(0, Math.min(100, (currentStep / totalSteps) * 100))
+        : 0
+  const activeVideos = videoStates.filter((video) => video.status === 'processing')
+  const queuedVideos = videoStates.filter((video) => video.status === 'pending')
+  const headlineLabel =
+    currentStage === 'complete'
+      ? 'Complete'
+      : currentStage === 'failed'
+        ? 'Attention'
+        : stages[currentStageIndex]?.label || 'Processing'
+  const headlineDescription =
+    currentStage === 'complete'
+      ? 'The project finished processing.'
+      : currentStage === 'failed'
+        ? 'The pipeline stopped before finishing.'
+        : stages[currentStageIndex]?.description || 'The project is being processed.'
 
   return (
-    <div className={cn('space-y-1', className)}>
-      {stages.map((stage, index) => {
-        const isStageComplete = index < currentStageIndex || isComplete
-        const isStageCurrent = index === currentStageIndex && !isFailed && !isComplete
-        const isStagePending = index > currentStageIndex || isFailed
+    <div className={cn('space-y-4 rounded-2xl border border-gray-200 bg-white p-5 shadow-sm', className)}>
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="inline-flex items-center rounded-full bg-indigo-50 px-2.5 py-1 text-xs font-semibold text-indigo-700">
+              {currentStage === 'failed' ? 'Attention' : currentStage === 'complete' ? 'Complete' : 'Processing'}
+            </span>
+            {currentVideo && (
+              <span className="text-xs text-gray-500 truncate">
+                Active: {currentVideo}
+              </span>
+            )}
+          </div>
+          <h3 className="mt-2 text-sm font-semibold text-gray-900">{headlineLabel}</h3>
+          <p className="mt-1 text-sm text-gray-500">{headlineDescription}</p>
+        </div>
 
-        // Time tracking — fabricate reasonable values for demo feel
-        const elapsedMap: Record<number, string> = { 0: '10.2s', 1: '8.7s', 2: '42.1s', 3: '18.4s elapsed', 4: '' }
-        const timeLabel = isStageComplete ? elapsedMap[index] : isStageCurrent ? elapsedMap[index] : ''
+        <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-4 lg:min-w-[360px]">
+          <div className="rounded-xl border border-gray-100 bg-gray-50 px-3 py-2">
+            <div className="text-gray-400">Done</div>
+            <div className="mt-1 font-semibold text-gray-900">{completedCount}</div>
+          </div>
+          <div className="rounded-xl border border-gray-100 bg-gray-50 px-3 py-2">
+            <div className="text-gray-400">Queued</div>
+            <div className="mt-1 font-semibold text-gray-900">{queuedCount || queuedVideos.length}</div>
+          </div>
+          <div className="rounded-xl border border-gray-100 bg-gray-50 px-3 py-2">
+            <div className="text-gray-400">Active</div>
+            <div className="mt-1 font-semibold text-gray-900">{processingCount || activeVideos.length}</div>
+          </div>
+          <div className="rounded-xl border border-gray-100 bg-gray-50 px-3 py-2">
+            <div className="text-gray-400">Failed</div>
+            <div className="mt-1 font-semibold text-gray-900">{failedCount}</div>
+          </div>
+        </div>
+      </div>
 
-        return (
-          <motion.div
-            key={stage.key}
-            initial={{ opacity: 0, x: -12 }}
-            animate={{ opacity: 1, x: 0 }}
-            transition={{ delay: index * 0.06 }}
-            className="relative flex items-start gap-4"
-          >
-            {/* Connector line */}
-            {index < stages.length - 1 && (
+      <div className="space-y-2">
+        <div className="flex items-center justify-between text-xs text-gray-500">
+          <span>{currentStep} / {Math.max(totalSteps, 1)} finished</span>
+          <span>{Math.round(progressValue)}%</span>
+        </div>
+        <Progress value={progressValue} className="h-2 bg-gray-100" />
+      </div>
+
+      {activeVideos.length > 0 && (
+        <div className="space-y-2 rounded-xl border border-indigo-100 bg-indigo-50/60 p-3">
+          <div className="text-xs font-semibold uppercase tracking-wide text-indigo-700">
+            Active videos
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2">
+            {activeVideos.map((video) => (
+              <div
+                key={video.video_id}
+                className="flex items-center gap-3 rounded-lg border border-indigo-100 bg-white px-3 py-2"
+              >
+                <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-indigo-100 text-indigo-700">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                </div>
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-medium text-gray-900">{video.title}</div>
+                  <div className="text-xs text-gray-500">Downloading or summarizing now</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {queuedVideos.length > 0 && (
+        <div className="space-y-2 rounded-xl border border-gray-100 bg-gray-50 p-3">
+          <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+            Queue
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2">
+            {queuedVideos.map((video) => (
+              <div
+                key={video.video_id}
+                className="flex items-center gap-3 rounded-lg border border-gray-200 bg-white px-3 py-2"
+              >
+                <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-gray-100 text-gray-500">
+                  {video.queue_position ?? 'Q'}
+                </div>
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-medium text-gray-900">{video.title}</div>
+                  <div className="text-xs text-gray-500">Waiting to start</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="space-y-1.5">
+        {stages.map((stage, index) => {
+          const isStageComplete = index < currentStageIndex || currentStage === 'complete'
+          const isStageCurrent = index === currentStageIndex && currentStage !== 'failed' && currentStage !== 'complete'
+          const isStagePending = index > currentStageIndex || currentStage === 'failed'
+
+          return (
+            <motion.div
+              key={stage.key}
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: index * 0.05 }}
+              className="relative flex items-start gap-3 rounded-xl px-1 py-1"
+            >
+              {index < stages.length - 1 && (
+                <div
+                  className={cn(
+                    'absolute left-4 top-8 h-8 w-0.5',
+                    isStageComplete ? 'bg-emerald-400' : isStageCurrent ? 'bg-indigo-300' : 'bg-gray-200'
+                  )}
+                />
+              )}
               <div
                 className={cn(
-                  'absolute left-4 top-9 w-0.5 h-10 z-0',
-                  isStageComplete ? 'bg-green-400' : isStageCurrent ? 'bg-indigo-300' : 'bg-gray-200'
-                )}
-              />
-            )}
-
-            {/* Icon */}
-            <div className="relative z-10 flex-shrink-0">
-              <motion.div
-                animate={isStageCurrent ? { scale: [1, 1.08, 1] } : {}}
-                transition={{ duration: 1.4, repeat: Infinity, repeatDelay: 0.5 }}
-                className={cn(
-                  'w-8 h-8 rounded-full flex items-center justify-center border-2 transition-colors',
-                  isStageComplete && 'bg-green-500 border-green-500 text-white',
-                  isStageCurrent && 'bg-indigo-600 border-indigo-600 text-white',
-                  isStagePending && 'bg-white border-gray-300 text-gray-300'
+                  'relative z-10 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full border-2',
+                  isStageComplete && 'border-emerald-500 bg-emerald-500 text-white',
+                  isStageCurrent && 'border-indigo-600 bg-indigo-600 text-white',
+                  isStagePending && 'border-gray-300 bg-white text-gray-300'
                 )}
               >
                 {isStageComplete ? (
@@ -83,88 +194,62 @@ export function ProcessingPipeline({
                 ) : isStageCurrent ? (
                   <Loader2 className="h-4 w-4 animate-spin" />
                 ) : (
-                  <div className="w-2 h-2 rounded-full bg-gray-300" />
+                  <div className="h-2 w-2 rounded-full bg-gray-300" />
                 )}
-              </motion.div>
-            </div>
+              </div>
 
-            {/* Content */}
-            <div className="flex-1 pb-8 min-w-0">
-              <div className="flex items-start justify-between gap-2">
-                <div>
-                  <p className={cn(
-                    'text-sm font-semibold',
-                    isStageComplete ? 'text-gray-900' : isStageCurrent ? 'text-gray-900' : 'text-gray-400'
-                  )}>
-                    {stage.label}
-                  </p>
-                  <p className="text-xs text-gray-500 mt-0.5">{stage.description}</p>
-                </div>
-                <div className="flex items-center gap-2 flex-shrink-0">
-                  {timeLabel && (
-                    <span className={cn('text-xs', isStageComplete ? 'text-gray-400' : 'text-indigo-500 font-medium')}>
-                      {timeLabel}
-                    </span>
-                  )}
-                  {isStageComplete && (
-                    <span className="text-xs font-medium text-green-700 bg-green-100 px-2 py-0.5 rounded-full">
-                      Completed
-                    </span>
-                  )}
-                  {isStageCurrent && (
-                    <span className="text-xs font-medium text-indigo-700 bg-indigo-100 px-2 py-0.5 rounded-full">
-                      Processing
-                    </span>
-                  )}
-                  {isStagePending && !isFailed && (
-                    <span className="text-xs font-medium text-gray-500 bg-gray-100 px-2 py-0.5 rounded-full">
-                      Pending
-                    </span>
-                  )}
+              <div className="min-w-0 flex-1 pb-3">
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <div className={cn('text-sm font-semibold', isStageComplete ? 'text-gray-900' : isStageCurrent ? 'text-gray-900' : 'text-gray-400')}>
+                      {stage.label}
+                    </div>
+                    <div className="mt-0.5 text-xs text-gray-500">{stage.description}</div>
+                  </div>
+                  <div className="flex-shrink-0">
+                    {isStageComplete && (
+                      <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-700">
+                        Completed
+                      </span>
+                    )}
+                    {isStageCurrent && (
+                      <span className="rounded-full bg-indigo-100 px-2 py-0.5 text-xs font-medium text-indigo-700">
+                        Working
+                      </span>
+                    )}
+                    {isStagePending && !isStageCurrent && (
+                      <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-500">
+                        Pending
+                      </span>
+                    )}
+                  </div>
                 </div>
               </div>
-            </div>
-          </motion.div>
-        )
-      })}
+            </motion.div>
+          )
+        })}
+      </div>
 
-      {/* Video-level status cards */}
-      {(videoStates?.length ?? 0) > 0 && currentStage !== 'complete' && currentStage !== 'failed' && (
-        <div className="mt-4 space-y-1.5 pt-2 border-t border-gray-100">
-          <p className="text-xs font-medium text-gray-400 mb-2">Video progress</p>
-          {videoStates!.map((vs) => (
-            <div
-              key={vs.video_id}
-              className={cn(
-                'flex items-center gap-3 px-3 py-2 rounded-lg border text-sm',
-                vs.status === 'completed' && 'border-green-200 bg-green-50',
-                vs.status === 'failed' && 'border-red-200 bg-red-50',
-                vs.status === 'processing' && 'border-indigo-200 bg-indigo-50',
-                vs.status === 'pending' && 'border-gray-100 bg-gray-50',
-              )}
-            >
-              {vs.status === 'completed' && <Check className="h-3.5 w-3.5 text-green-500 flex-shrink-0" />}
-              {vs.status === 'failed' && <XCircle className="h-3.5 w-3.5 text-red-500 flex-shrink-0" />}
-              {vs.status === 'processing' && <Loader2 className="h-3.5 w-3.5 animate-spin text-indigo-500 flex-shrink-0" />}
-              {vs.status === 'pending' && <div className="h-3.5 w-3.5 rounded-full border-2 border-gray-300 flex-shrink-0" />}
-              <span className="flex-1 truncate text-xs text-gray-700">{vs.title}</span>
-            </div>
-          ))}
+      {errors.length > 0 && (currentStage === 'failed' || currentStage === 'complete') && (
+        <div className="rounded-xl border border-red-200 bg-red-50 p-4">
+          <div className="flex items-center gap-2 text-sm font-semibold text-red-700">
+            <AlertCircle className="h-4 w-4" />
+            <span>Errors encountered</span>
+          </div>
+          <ul className="mt-2 space-y-1">
+            {errors.map((error) => (
+              <li key={error} className="text-xs text-red-600">
+                {error}
+              </li>
+            ))}
+          </ul>
         </div>
       )}
 
-      {/* Errors */}
-      {errors.length > 0 && (isFailed || isComplete) && (
-        <div className="mt-4 p-4 bg-red-50 border border-red-200 rounded-xl space-y-2">
-          <div className="flex items-center gap-2 text-sm text-red-600">
-            <AlertCircle className="h-4 w-4" />
-            <span className="font-medium">Errors encountered</span>
-          </div>
-          <ul className="space-y-1">
-            {errors.map((error, i) => (
-              <li key={i} className="text-xs text-red-500 pl-6">• {error}</li>
-            ))}
-          </ul>
+      {currentStage === 'complete' && failedCount > 0 && (
+        <div className="flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          <XCircle className="h-4 w-4" />
+          Some videos failed, but the project finished. Use retry to process the failures again.
         </div>
       )}
     </div>

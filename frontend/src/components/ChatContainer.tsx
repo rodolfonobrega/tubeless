@@ -2,8 +2,8 @@
 
 import { useState, useRef, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Send, Bot, ExternalLink, Clock, ChevronDown, ChevronUp } from 'lucide-react'
-import { formatTimestamp, getYouTubeId } from '@/lib/utils'
+import { Send, Bot, ExternalLink, Clock, ChevronDown, ChevronUp, Check, Video as VideoIcon } from 'lucide-react'
+import { formatTimestamp, getVideoDisplayTitle, getYouTubeId } from '@/lib/utils'
 import type { ChatMessage, ChatSource, Video } from '@/types'
 
 interface ChatContainerProps {
@@ -24,14 +24,35 @@ export function ChatContainer({
 }: ChatContainerProps) {
   const [input, setInput] = useState('')
   const [selectedVideoIds, setSelectedVideoIds] = useState<string[]>([])
+  const [hasInitialized, setHasInitialized] = useState(false)
+  const [menuOpen, setMenuOpen] = useState(false)
+
+  useEffect(() => {
+    if (videos.length > 0 && !hasInitialized) {
+      setSelectedVideoIds(videos.map((v) => v.youtube_video_id))
+      setHasInitialized(true)
+    }
+  }, [videos, hasInitialized])
+
   const scrollRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const dropdownRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight
     }
   }, [messages, isStreaming])
+
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+        setMenuOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
@@ -45,18 +66,32 @@ export function ChatContainer({
     }
   }
 
-  const allSelected = selectedVideoIds.length === 0
+  const allSelected = selectedVideoIds.length === videos.length
+  const noneSelected = selectedVideoIds.length === 0
+
   const toggleVideo = (youtubeId: string) => {
     setSelectedVideoIds((prev) => {
       if (prev.includes(youtubeId)) {
-        const next = prev.filter((id) => id !== youtubeId)
-        return next.length === videos.length ? [] : next
+        return prev.filter((id) => id !== youtubeId)
+      } else {
+        return [...prev, youtubeId]
       }
-      const next = [...prev, youtubeId]
-      return next.length === videos.length ? [] : next
     })
   }
-  const selectAll = () => setSelectedVideoIds([])
+
+  const handleSelectAll = () => {
+    setSelectedVideoIds(videos.map((v) => v.youtube_video_id))
+  }
+
+  const handleDeselectAll = () => {
+    setSelectedVideoIds([])
+  }
+
+  const handleInvert = () => {
+    setSelectedVideoIds((prev) =>
+      videos.map((v) => v.youtube_video_id).filter((id) => !prev.includes(id))
+    )
+  }
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -76,81 +111,124 @@ export function ChatContainer({
   return (
     <div className="flex flex-col h-full bg-white">
       {/* Messages */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto px-6 py-5 space-y-5">
-        <AnimatePresence>
-          {messages.length === 0 ? (
-            <motion.div
-              initial={{ opacity: 0, y: 16 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="flex flex-col items-center justify-center h-full pt-16 text-center"
-            >
-              <div className="w-12 h-12 rounded-full bg-gray-100 flex items-center justify-center mb-3">
-                <Bot className="h-6 w-6 text-gray-400" />
-              </div>
-              <h3 className="text-base font-semibold text-gray-900 mb-1">Ask anything about your project</h3>
-              <p className="text-sm text-gray-500">Get answers with citations from video transcripts</p>
-            </motion.div>
-          ) : (
-            messages.map((message) => (
-              <MessageBubble key={message.id} message={message} />
-            ))
-          )}
+      <div ref={scrollRef} className="flex-1 overflow-y-auto px-6 py-5">
+        <div className={`max-w-6xl mx-auto w-full min-h-full flex flex-col ${messages.length === 0 ? 'justify-center' : 'justify-start space-y-5'}`}>
+          <AnimatePresence>
+            {messages.length === 0 ? (
+              <motion.div
+                initial={{ opacity: 0, y: 16 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="flex flex-col items-center justify-center text-center"
+              >
+                <div className="w-12 h-12 rounded-full bg-gray-100 flex items-center justify-center mb-3">
+                  <Bot className="h-6 w-6 text-gray-400" />
+                </div>
+                <h3 className="text-base font-semibold text-gray-900 mb-1">Ask anything about your project</h3>
+                <p className="text-sm text-gray-500">Get answers with citations from video transcripts</p>
+              </motion.div>
+            ) : (
+              messages.map((message) => (
+                <MessageBubble key={message.id} message={message} />
+              ))
+            )}
 
-          {/* Streaming indicator */}
-          {(isLoading || isStreaming) && (
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              className="flex gap-3"
-            >
-              <div className="flex-shrink-0 w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center">
-                <Bot className="h-4 w-4 text-gray-400" />
-              </div>
-              <div className="flex items-center gap-1 px-4 py-3 bg-white border border-gray-200 rounded-2xl rounded-tl-sm">
-                <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '120ms' }} />
-                <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '240ms' }} />
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
+            {/* Streaming indicator */}
+            {(isLoading || isStreaming) && (
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                className="flex gap-3"
+              >
+                <div className="flex-shrink-0 w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center">
+                  <Bot className="h-4 w-4 text-gray-400" />
+                </div>
+                <div className="flex items-center gap-1 px-4 py-3 bg-white border border-gray-200 rounded-2xl rounded-tl-sm">
+                  <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                  <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '120ms' }} />
+                  <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '240ms' }} />
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
       </div>
 
       {/* Input */}
       <div className="border-t border-gray-200 bg-white px-6 py-4">
-        <form onSubmit={handleSubmit} className="space-y-3">
-          {/* Video filter chips */}
+        <form onSubmit={handleSubmit} className="max-w-6xl mx-auto w-full space-y-3 relative">
+          {/* Video filter dropdown */}
           {videos.length > 1 && (
-            <div className="flex flex-wrap gap-1.5">
+            <div className="relative" ref={dropdownRef}>
               <button
                 type="button"
-                onClick={selectAll}
-                className={`text-xs px-2.5 py-1 rounded-full transition-colors border ${
-                  allSelected
-                    ? 'bg-gray-900 text-white border-gray-900'
-                    : 'border-gray-200 text-gray-500 hover:border-gray-400'
-                }`}
+                onClick={() => setMenuOpen(!menuOpen)}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-gray-200 bg-white hover:bg-gray-50 text-xs font-semibold text-gray-700 transition-colors shadow-sm focus:outline-none focus:ring-2 focus:ring-gray-900 focus:border-transparent"
               >
-                All videos
+                <VideoIcon className="h-3.5 w-3.5 text-gray-500" />
+                <span>
+                  {allSelected
+                    ? 'Active Sources: All videos'
+                    : noneSelected
+                      ? 'Active Sources: No videos selected'
+                      : `Active Sources: ${selectedVideoIds.length} of ${videos.length} selected`}
+                </span>
+                {menuOpen ? <ChevronUp className="h-3 w-3 text-gray-400 ml-1" /> : <ChevronDown className="h-3 w-3 text-gray-400 ml-1" />}
               </button>
-              {videos.map((v) => {
-                const isSelected = allSelected || selectedVideoIds.includes(v.youtube_video_id)
-                return (
-                  <button
-                    key={v.id}
-                    type="button"
-                    onClick={() => toggleVideo(v.youtube_video_id)}
-                    title={v.title || v.youtube_video_id}
-                    className={`text-xs px-2.5 py-1 rounded-full transition-colors border max-w-[180px] truncate ${
-                      isSelected
-                        ? 'bg-indigo-50 text-indigo-700 border-indigo-200'
-                        : 'border-gray-200 text-gray-500 hover:border-gray-400'
-                    }`}
-                  >
-                    {v.title || v.youtube_video_id}
-                  </button>
-                )
-              })}
+
+              {menuOpen && (
+                <div className="absolute bottom-full mb-2 left-0 z-10 w-80 bg-white border border-gray-200 shadow-lg rounded-xl py-1.5 max-h-64 overflow-y-auto focus:outline-none">
+                  <div className="px-3 py-1.5 border-b border-gray-100">
+                    <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Select Active Sources</p>
+                  </div>
+
+                  <div className="flex items-center gap-1.5 px-3 py-2 border-b border-gray-100">
+                    <button
+                      type="button"
+                      onClick={handleSelectAll}
+                      className="text-[10px] font-semibold px-2 py-1 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded transition-colors"
+                    >
+                      Select All
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleDeselectAll}
+                      className="text-[10px] font-semibold px-2 py-1 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded transition-colors"
+                    >
+                      Deselect All
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleInvert}
+                      className="text-[10px] font-semibold px-2 py-1 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded transition-colors"
+                    >
+                      Invert
+                    </button>
+                  </div>
+
+                  {videos.map((v) => {
+                    const isSelected = selectedVideoIds.includes(v.youtube_video_id)
+                    const displayTitle = getVideoDisplayTitle(v.title, v.youtube_video_id)
+                    const thumbUrl = v.thumbnail_url || `https://img.youtube.com/vi/${v.youtube_video_id}/mqdefault.jpg`
+                    return (
+                      <button
+                        key={v.id}
+                        type="button"
+                        onClick={() => toggleVideo(v.youtube_video_id)}
+                        title={displayTitle}
+                        className="w-full flex items-center justify-between px-3 py-2 text-left text-xs text-gray-700 hover:bg-gray-50 transition-colors"
+                      >
+                        <div className="flex items-center gap-2 min-w-0 flex-1">
+                          <div className="w-8 h-6 rounded overflow-hidden flex-shrink-0 bg-gray-100 border border-gray-200">
+                            <img src={thumbUrl} alt="" className="w-full h-full object-cover" />
+                          </div>
+                          <span className="truncate pr-4">{displayTitle}</span>
+                        </div>
+                        {isSelected && <Check className="h-3.5 w-3.5 text-indigo-600 flex-shrink-0" />}
+                      </button>
+                    )
+                  })}
+                </div>
+              )}
             </div>
           )}
 
@@ -244,6 +322,7 @@ function MessageBubble({ message }: { message: ChatMessage }) {
 function SourceChip({ source, index }: { source: ChatSource; index: number }) {
   const href = source.youtube_url || `https://www.youtube.com/watch?v=${source.video_id}`
   const thumbnailId = source.video_id ? getYouTubeId(source.video_id) : source.video_id
+  const displayTitle = getVideoDisplayTitle(source.video_title, source.video_id)
 
   return (
     <a
@@ -263,7 +342,7 @@ function SourceChip({ source, index }: { source: ChatSource; index: number }) {
       )}
       <div className="min-w-0">
         <p className="text-xs font-medium text-gray-700 truncate max-w-[150px]">
-          {source.video_title || source.video_id}
+          {displayTitle}
         </p>
         {source.timestamp != null && (
           <p className="text-[10px] text-gray-400 flex items-center gap-0.5">

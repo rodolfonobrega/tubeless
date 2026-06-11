@@ -2,9 +2,9 @@
 
 import { useState } from 'react'
 import { motion } from 'framer-motion'
-import { Lightbulb, Clock, ExternalLink, Quote as QuoteIcon } from 'lucide-react'
-import { formatTimestamp, getYouTubeId } from '@/lib/utils'
-import type { ConsolidatedSynthesis, Quote } from '@/types'
+import { Clock, ExternalLink } from 'lucide-react'
+import { formatTimestamp, getVideoDisplayTitle, getYouTubeId } from '@/lib/utils'
+import type { ConsolidatedSynthesis } from '@/types'
 
 interface ConsolidatedViewProps {
   synthesis: ConsolidatedSynthesis
@@ -24,15 +24,15 @@ export function ConsolidatedView({ synthesis, className }: ConsolidatedViewProps
   const [expandedSources, setExpandedSources] = useState<number[]>([0])
 
   const toggleSection = (idx: number) => {
-    setExpandedSources(prev =>
-      prev.includes(idx) ? prev.filter(i => i !== idx) : [...prev, idx]
+    setExpandedSources((prev) =>
+      prev.includes(idx) ? prev.filter((i) => i !== idx) : [...prev, idx]
     )
   }
 
   // Flatten notable quotes into a structure for the sources panel
-  const quoteSources = synthesis.notable_quotes.map(q => ({
+  const quoteSources = synthesis.notable_quotes.map((q) => ({
     thumbnail: `https://img.youtube.com/vi/${getYouTubeId(q.video_id)}/mqdefault.jpg`,
-    title: q.video_title || q.video_id,
+    title: getVideoDisplayTitle(q.video_title, q.video_id),
     timestamp: formatTimestamp(q.timestamp),
     youtubeId: getYouTubeId(q.video_id),
     timestampSec: q.timestamp,
@@ -40,7 +40,7 @@ export function ConsolidatedView({ synthesis, className }: ConsolidatedViewProps
 
   return (
     <div className="flex gap-0 h-full">
-      {/* Main content — 70% */}
+      {/* Main content - 70% */}
       <div className="flex-1 overflow-y-auto px-6 py-2 space-y-8 min-w-0">
         {/* Overview */}
         <section>
@@ -63,7 +63,9 @@ export function ConsolidatedView({ synthesis, className }: ConsolidatedViewProps
                   transition={{ delay: i * 0.05 }}
                   className="flex items-start gap-3"
                 >
-                  <span className="flex-shrink-0 text-sm font-semibold text-gray-400 w-5 mt-0.5">{i + 1}.</span>
+                  <span className="flex-shrink-0 text-sm font-semibold text-gray-400 w-5 mt-0.5">
+                    {i + 1}.
+                  </span>
                   <p className="text-sm text-gray-700 leading-relaxed">{takeaway}</p>
                 </motion.li>
               ))}
@@ -105,7 +107,7 @@ export function ConsolidatedView({ synthesis, className }: ConsolidatedViewProps
                     <Clock className="h-3 w-3" />
                     {formatTimestamp(quote.timestamp)}
                     <ExternalLink className="h-3 w-3" />
-                    <span className="text-gray-500">· {quote.video_title}</span>
+                    <span className="text-gray-500">- {getVideoDisplayTitle(quote.video_title, quote.video_id)}</span>
                   </a>
                 </div>
               ))}
@@ -114,7 +116,7 @@ export function ConsolidatedView({ synthesis, className }: ConsolidatedViewProps
         )}
       </div>
 
-      {/* Sources panel — 30% */}
+      {/* Sources panel - 30% */}
       <aside className="w-72 flex-shrink-0 border-l border-gray-200 overflow-y-auto bg-white">
         <div className="sticky top-0 bg-white border-b border-gray-100 px-5 py-4">
           <h3 className="text-sm font-semibold text-gray-900">Sources</h3>
@@ -130,7 +132,7 @@ export function ConsolidatedView({ synthesis, className }: ConsolidatedViewProps
                 onClick={() => toggleSection(0)}
                 className="w-full flex items-center justify-between text-sm font-semibold text-gray-900 mb-2"
               >
-                <span>Notable Quotes</span>
+                <span>{SECTION_LABELS[4]}</span>
                 <span className="text-xs text-gray-400">{quoteSources.length} sources</span>
               </button>
               {expandedSources.includes(0) && (

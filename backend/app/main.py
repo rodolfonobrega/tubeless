@@ -38,9 +38,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     async with async_session_maker() as _s:
         await load_effective_settings(_s)
 
+    # Start preloading FlashRank model in a background thread to reduce RAG cold start latency
+    from app.services.reranking_service import RerankingService
+    RerankingService.start_background_init()
+
     yield
     # Shutdown
     await close_db()
+
 
 
 # Create FastAPI app
